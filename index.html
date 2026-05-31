@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>InmobiliariaPro — Sistema de Gestión</title>
+  <link rel="stylesheet" href="styles.css"/>
+  <!-- CDN Libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════
+     SUPABASE SETUP SCREEN
+══════════════════════════════════════════════ -->
+<div id="supabase-setup">
+  <div class="setup-card">
+    <div style="font-size:42px;margin-bottom:16px">🏢</div>
+    <h2>Configuración Inicial</h2>
+    <p>Para sincronización en tiempo real entre dispositivos, necesitas conectar tu base de datos Supabase. Sigue estos pasos:</p>
+    <div class="setup-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <h4>Crea tu cuenta gratuita</h4>
+        <p>Ve a <strong style="color:var(--gold)">supabase.com</strong> → New Project → elige nombre y región.</p>
+      </div>
+    </div>
+    <div class="setup-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <h4>Obtén tus credenciales</h4>
+        <p>En tu proyecto: Settings → API → copia <code>Project URL</code> y <code>anon public key</code></p>
+      </div>
+    </div>
+    <div class="setup-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <h4>Ejecuta el SQL de configuración</h4>
+        <p>En SQL Editor de Supabase, pega y ejecuta el script que encontrarás en <code>README_SQL.txt</code> incluido en este paquete.</p>
+      </div>
+    </div>
+    <div class="form-group" style="margin-top:24px">
+      <label>Project URL de Supabase</label>
+      <input type="url" id="sb-url" class="form-control" placeholder="https://xxxx.supabase.co"/>
+    </div>
+    <div class="form-group" style="margin-top:14px">
+      <label>Anon Public Key</label>
+      <input type="text" id="sb-key" class="form-control" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."/>
+    </div>
+    <button class="btn btn-primary w-full" style="margin-top:20px" onclick="App.setupSupabase()">
+      ✓ Conectar y Continuar
+    </button>
+    <p style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:14px">
+      Tus credenciales se guardan localmente solo en este navegador.<br/>
+      El sistema usa Supabase para sincronización entre dispositivos.
+    </p>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════
+     LOGIN SCREEN
+══════════════════════════════════════════════ -->
+<div id="login-screen" class="hidden">
+  <div class="login-bg">
+    <div class="login-grid"></div>
+  </div>
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="logo-mark">🏢</div>
+      <h1>InmobiliariaPro</h1>
+      <p>Sistema de Gestión Inmobiliaria</p>
+    </div>
+    <form class="login-form" onsubmit="App.login(event)">
+      <div class="form-group">
+        <label>Usuario</label>
+        <input type="text" id="login-user" class="form-control" placeholder="Ingresa tu usuario" required autocomplete="username"/>
+      </div>
+      <div class="form-group">
+        <label>Contraseña</label>
+        <input type="password" id="login-pass" class="form-control" placeholder="••••••••" required autocomplete="current-password"/>
+      </div>
+      <button type="submit" class="btn-login">Iniciar Sesión</button>
+      <div class="login-error" id="login-error">Usuario o contraseña incorrectos.</div>
+    </form>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════
+     MAIN APPLICATION
+══════════════════════════════════════════════ -->
+<div id="app" class="hidden">
+  <div class="sidebar-overlay" id="sidebar-overlay" onclick="App.closeSidebar()"></div>
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-logo">🏢</div>
+      <div class="sidebar-brand">
+        <h2>InmobiliariaPro</h2>
+        <span>Gestión Inmobiliaria</span>
+      </div>
+    </div>
+    <nav class="sidebar-nav" id="sidebar-nav">
+      <!-- dynamically populated based on role -->
+    </nav>
+    <div class="sidebar-footer">
+      <div class="user-card">
+        <div class="user-avatar" id="sidebar-avatar">A</div>
+        <div class="user-info">
+          <div class="uname" id="sidebar-username">Admin</div>
+          <div class="urole" id="sidebar-role">Administrador</div>
+        </div>
+        <button class="btn-logout" onclick="App.logout()" title="Cerrar sesión">⏻</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <div class="main-content">
+    <header class="topbar">
+      <div style="display:flex;align-items:center;gap:12px">
+        <button class="hamburger" onclick="App.openSidebar()">☰</button>
+        <div class="topbar-left">
+          <h3 id="topbar-title">Dashboard</h3>
+          <div class="breadcrumb" id="topbar-breadcrumb">Inicio / Dashboard</div>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <button class="topbar-btn" title="Notificaciones" onclick="App.showNotifications()">🔔</button>
+        <button class="topbar-btn" title="Configuración" onclick="App.navigate('configuracion')">⚙️</button>
+      </div>
+    </header>
+
+    <main class="page-content" id="page-content">
+      <!-- Pages rendered here by JS -->
+    </main>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════
+     GLOBAL MODAL
+══════════════════════════════════════════════ -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal" id="modal" role="dialog">
+    <div class="modal-header">
+      <h3 id="modal-title">Modal</h3>
+      <button class="modal-close" onclick="App.closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-footer" id="modal-footer"></div>
+  </div>
+</div>
+
+<!-- CONFIRM MODAL -->
+<div class="modal-overlay" id="confirm-overlay">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-header">
+      <h3 id="confirm-title">Confirmar</h3>
+      <button class="modal-close" onclick="App.closeConfirm()">✕</button>
+    </div>
+    <div class="modal-body">
+      <p id="confirm-msg" style="color:var(--text-secondary);line-height:1.6"></p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="App.closeConfirm()">Cancelar</button>
+      <button class="btn btn-danger" id="confirm-ok" onclick="App.doConfirm()">Eliminar</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST CONTAINER -->
+<div class="toast-container" id="toast-container"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
