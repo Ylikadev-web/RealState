@@ -81,27 +81,45 @@ const App = (() => {
   };
 
   // ── AUTH ───────────────────────────────────────────────────────
-  async function login(e) {
-    e.preventDefault();
-    const username = document.getElementById('login-user').value.trim().toLowerCase();
-    const password = document.getElementById('login-pass').value;
-    const errEl = document.getElementById('login-error');
-    errEl.classList.remove('show');
+ async function login(e) {
+  e.preventDefault();
 
-    try {
-      const users = await DB.get('users', { username, active: true });
-      const user = users.find(u => u.password_hash === hashPassword(password));
-      if (!user) { errEl.classList.add('show'); return; }
-      currentUser = user;
-      sessionStorage.setItem('current_user', JSON.stringify(user));
-      document.getElementById('login-screen').classList.add('hidden');
-      document.getElementById('app').classList.remove('hidden');
-      initApp();
-    } catch(err) {
-      errEl.textContent = 'Error: ' + err.message;
-      errEl.classList.add('show');
-    }
+  const email = document.getElementById('login-user').value.trim();
+  const password = document.getElementById('login-pass').value;
+  const errEl = document.getElementById('login-error');
+
+  errEl.classList.remove('show');
+
+  try {
+    // 🔑 LOGIN REAL CON SUPABASE AUTH
+    const { data, error } = await sb.auth.signInWithPassword({
+      email: email,
+      password: password
+    });
+
+    if (error) throw error;
+
+    // ✅ Obtener perfil de tu tabla
+    const { data: profile, error: profileError } = await sb
+      .from('app_users')
+      .select('*')
+      .eq('id', data.user.id)
+      .single();
+
+    if (profileError) throw profileError;
+
+    currentUser = profile;
+
+    document.getElementById('login-screen').classList.add('hidden');
+    document.getElementById('app').classList.remove('hidden');
+
+    initApp();
+
+  } catch (err) {
+    errEl.textContent = err.message;
+    errEl.classList.add('show');
   }
+}
 
   function logout() {
     currentUser = null;
