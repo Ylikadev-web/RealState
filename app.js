@@ -20,9 +20,9 @@ const App = (() => {
     if (!url || !key) { toast('Ingresa URL y Key de Supabase', 'error'); return; }
     try {
       sb = supabase.createClient(url, key);
-      // Test connection
-      const { error } = await sb.from('users').select('id').limit(1);
-      if (error && error.code !== 'PGRST116') throw error;
+      // Test connection against real table
+      const { error } = await sb.from('app_users').select('id').limit(1);
+      if (error && error.code !== 'PGRST116' && error.code !== '42501') throw error;
       localStorage.setItem('sb_url', url);
       localStorage.setItem('sb_key', key);
       document.getElementById('supabase-setup').classList.add('hidden');
@@ -81,49 +81,68 @@ const App = (() => {
   };
 
   // ── AUTH ───────────────────────────────────────────────────────
- async function login(e) {
-  e.preventDefault();
+  async function login(e) {
+    e.preventDefault();
+    const rawInput = document.getElementById('login-user').value.trim();
+    const password = document.getElementById('login-pass').value;
+    const errEl   = document.getElementById('login-error');
+    errEl.classList.remove('show');
 
-  const email = document.getElementById('login-user').value.trim();
-  const password = document.getElementById('login-pass').value;
-  const errEl = document.getElementById('login-error');
+    try {
+      // --- Determinar si ingresó username o email ---
+      let emailToUse = rawInput;
 
-  errEl.classList.remove('show');
+      // Si no contiene "@" lo tratamos como username → buscar email en app_users
+      if (!rawInput.includes('@')) {
+        const { data: found, error: lookupErr } = await sb
+          .from('app_users')
+          .select('email')
+          .eq('username', rawInput)
+          .maybeSingle();
+        if (lookupErr) throw lookupErr;
+        if (!found || !found.email) {
+          throw new Error('Usuario no encontrado. Verifica tu usuario o usa tu correo.');
+        }
+        emailToUse = found.email;
+      }
 
-  try {
-    // 🔑 LOGIN REAL CON SUPABASE AUTH
-    const { data, error } = await sb.auth.signInWithPassword({
-      email: email,
-      password: password
-    });
+      // --- Login con Supabase Auth ---
+      const { data, error } = await sb.auth.signInWithPassword({
+        email: emailToUse,
+        password: password,
+      });
+      if (error) throw error;
 
-    if (error) throw error;
+      // --- Verificar que el usuario esté activo ---
+      const { data: profile, error: profileError } = await sb
+        .from('app_users')
+        .select('*')
+        .eq('id', data.user.id)
+        .single();
+      if (profileError) throw profileError;
+      if (!profile.active) throw new Error('Tu cuenta está desactivada. Contacta al administrador.');
 
-    // ✅ Obtener perfil de tu tabla
-    const { data: profile, error: profileError } = await sb
-      .from('app_users')
-      .select('*')
-      .eq('id', data.user.id)
-      .single();
+      currentUser = profile;
+      sessionStorage.setItem('current_user', JSON.stringify(profile));
 
-    if (profileError) throw profileError;
+      document.getElementById('login-screen').classList.add('hidden');
+      document.getElementById('app').classList.remove('hidden');
+      initApp();
 
-    currentUser = profile;
-
-    document.getElementById('login-screen').classList.add('hidden');
-    document.getElementById('app').classList.remove('hidden');
-
-    initApp();
-
-  } catch (err) {
-    errEl.textContent = err.message;
-    errEl.classList.add('show');
+    } catch (err) {
+      // Traducir errores comunes de Supabase al español
+      let msg = err.message;
+      if (msg.includes('Invalid login credentials')) msg = 'Correo o contraseña incorrectos.';
+      if (msg.includes('Email not confirmed'))       msg = 'Correo no confirmado. Revisa tu bandeja.';
+      errEl.textContent = msg;
+      errEl.classList.add('show');
+    }
   }
-}
 
   function logout() {
     currentUser = null;
     sessionStorage.removeItem('current_user');
+    if (sb) sb.auth.signOut();
     document.getElementById('app').classList.add('hidden');
     document.getElementById('login-screen').classList.remove('hidden');
     document.getElementById('login-user').value = '';
@@ -1322,7 +1341,7 @@ const App = (() => {
     if (!isAdmin()) { navigate('dashboard'); return; }
     const pc = document.getElementById('page-content');
     try {
-      const users = await DB.get('users');
+      const users = await DB.get('app_users');
       pc.innerHTML = `
         <div class="section-header">
           <div><div class="section-title">Gestión de Usuarios</div><div class="section-subtitle">${users.length} usuario(s)</div></div>
@@ -1335,15 +1354,16 @@ const App = (() => {
               <tbody>
                 ${users.map(u=>`
                   <tr>
-                    <td class="td-name text-mono">${escHtml(u.username)}</td>
+                    <td class="td-name text-mono">${escHtml(u.username||'—')}</td>
                     <td>${escHtml(u.display_name||'—')}</td>
                     <td><span class="role-dot role-${u.role}"></span>${roleLabel(u.role)}</td>
                     <td>${escHtml(u.email||'—')}</td>
                     <td><span class="badge badge-${u.active?'green':'gray'}">${u.active?'Activo':'Inactivo'}</span></td>
                     <td>
                       <div style="display:flex;gap:6px">
+                        <button class="btn btn-secondary btn-xs" onclick="App.modals.editUser('${u.id}')">✏️ Editar</button>
                         ${u.username!=='admin'?`
-                        <button class="btn btn-secondary btn-xs" onclick="App.toggleUserActive('${u.id}',${!u.active})">${u.active?'Desactivar':'Activar'}</button>
+                        <button class="btn btn-${u.active?'danger':'success'} btn-xs" onclick="App.toggleUserActive('${u.id}',${!u.active})">${u.active?'Desactivar':'Activar'}</button>
                         <button class="btn btn-danger btn-xs" onclick="App.deleteUser('${u.id}')">🗑️</button>
                         `:'<span style="color:var(--text-muted);font-size:12px">Protegido</span>'}
                       </div>
@@ -2040,15 +2060,14 @@ const App = (() => {
 
   // USER MODALS
   modals.newUser = async function() {
-    const props = await DB.get('properties');
     openModal('Nuevo Usuario', `
       <div class="form-grid">
-        <div class="form-group"><label>Usuario *</label><input class="form-control" id="u-username" placeholder="juanperez"/></div>
+        <div class="form-group"><label>Nombre de Usuario *</label><input class="form-control" id="u-username" placeholder="juanperez"/></div>
         <div class="form-group"><label>Nombre Completo</label><input class="form-control" id="u-name"/></div>
-        <div class="form-group"><label>Email</label><input type="email" class="form-control" id="u-email"/></div>
-        <div class="form-group"><label>Contraseña *</label><input type="password" class="form-control" id="u-pass"/></div>
+        <div class="form-group"><label>Correo Electrónico * <small style="color:var(--text-muted)">(para iniciar sesión)</small></label><input type="email" class="form-control" id="u-email" placeholder="correo@ejemplo.com"/></div>
+        <div class="form-group"><label>Contraseña * <small style="color:var(--text-muted)">(mín. 6 caracteres)</small></label><input type="password" class="form-control" id="u-pass" placeholder="••••••••"/></div>
         <div class="form-group"><label>Rol *</label>
-          <select class="form-control" id="u-role" onchange="App.handleRoleChange(this)">
+          <select class="form-control" id="u-role">
             <option value="socio">Socio</option>
             <option value="inquilino">Inquilino</option>
             <option value="limpieza">Personal de Limpieza</option>
@@ -2057,39 +2076,155 @@ const App = (() => {
           </select>
         </div>
       </div>
+      <div id="user-save-error" style="color:var(--danger);font-size:13px;margin-top:12px;display:none"></div>
+      <p style="font-size:12px;color:var(--text-muted);margin-top:14px">
+        ⓘ El usuario podrá iniciar sesión con su <strong>correo</strong> o <strong>nombre de usuario</strong> más su contraseña.
+      </p>
     `, `
       <button class="btn btn-secondary" onclick="App.closeModal()">Cancelar</button>
-      <button class="btn btn-primary" onclick="App.saveUser()">Crear Usuario</button>
+      <button class="btn btn-primary" id="btn-save-user" onclick="App.saveUser()">Crear Usuario</button>
     `);
   };
 
-  function handleRoleChange(sel) { /* future: show/hide fields based on role */ }
+  modals.editUser = async function(id) {
+    const u = await DB.getById('app_users', id);
+    openModal('Editar Usuario', `
+      <input type="hidden" id="u-id" value="${u.id}"/>
+      <div class="form-grid">
+        <div class="form-group"><label>Nombre de Usuario</label><input class="form-control" id="u-username" value="${escHtml(u.username||'')}"/></div>
+        <div class="form-group"><label>Nombre Completo</label><input class="form-control" id="u-name" value="${escHtml(u.display_name||'')}"/></div>
+        <div class="form-group full"><label>Email</label><input type="email" class="form-control" id="u-email" value="${escHtml(u.email||'')}" disabled style="opacity:.6"/><small style="color:var(--text-muted);font-size:11px">El email no se puede cambiar desde aquí por seguridad.</small></div>
+        <div class="form-group"><label>Rol *</label>
+          <select class="form-control" id="u-role">
+            ${['socio','inquilino','limpieza','seguridad','mantenimiento'].map(r=>`<option value="${r}"${u.role===r?' selected':''}>${roleLabel(r)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group"><label>Estado</label>
+          <select class="form-control" id="u-active">
+            <option value="true"${u.active?' selected':''}>Activo</option>
+            <option value="false"${!u.active?' selected':''}>Inactivo</option>
+          </select>
+        </div>
+        <div class="form-group full"><label>Nueva Contraseña <small style="color:var(--text-muted)">(dejar vacío para no cambiar)</small></label>
+          <input type="password" class="form-control" id="u-pass" placeholder="••••••••"/>
+        </div>
+      </div>
+      <div id="user-save-error" style="color:var(--danger);font-size:13px;margin-top:12px;display:none"></div>
+    `, `
+      <button class="btn btn-secondary" onclick="App.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="App.saveUser()">Guardar Cambios</button>
+    `);
+  };
 
   async function saveUser() {
-    const username = document.getElementById('u-username').value.trim().toLowerCase();
-    const pass = document.getElementById('u-pass').value;
-    const role = document.getElementById('u-role').value;
-    const name = document.getElementById('u-name').value.trim();
-    const email = document.getElementById('u-email').value.trim();
-    if (!username || !pass) { toast('Usuario y contraseña son obligatorios','error'); return; }
+    const id       = document.getElementById('u-id')?.value;
+    const username = document.getElementById('u-username')?.value.trim().toLowerCase();
+    const name     = document.getElementById('u-name')?.value.trim();
+    const email    = document.getElementById('u-email')?.value.trim();
+    const pass     = document.getElementById('u-pass')?.value;
+    const role     = document.getElementById('u-role')?.value;
+    const activeVal= document.getElementById('u-active')?.value;
+    const errDiv   = document.getElementById('user-save-error');
+
+    const showErr = (msg) => { if(errDiv){ errDiv.textContent=msg; errDiv.style.display='block'; } toast(msg,'error'); };
+
+    // ── EDIT MODE ──────────────────────────────────────────────
+    if (id) {
+      const updates = { role, username, display_name: name };
+      if (activeVal !== undefined) updates.active = activeVal === 'true';
+      try {
+        await DB.update('app_users', id, updates);
+        // Change password if provided (requires service role key — inform user)
+        if (pass && pass.length >= 6) {
+          // We update password via Supabase Admin API — only possible server-side
+          // Client-side workaround: update metadata note
+          toast('Contraseña: para cambiarla el usuario debe usar "Olvidé mi contraseña" o usa el Panel Supabase → Authentication → Users.', 'info');
+        }
+        closeModal();
+        toast('Usuario actualizado ✓', 'success');
+        navigate('usuarios');
+      } catch(e) { showErr('Error: ' + e.message); }
+      return;
+    }
+
+    // ── CREATE MODE ────────────────────────────────────────────
+    if (!email || !pass) { showErr('Email y contraseña son obligatorios'); return; }
+    if (pass.length < 6) { showErr('La contraseña debe tener al menos 6 caracteres'); return; }
+    if (!email.includes('@')) { showErr('Ingresa un correo válido'); return; }
+
     try {
-      // Check unique username
-      const existing = await DB.get('users', { username });
-      if (existing.length) { toast('Ese usuario ya existe','error'); return; }
-      await DB.insert('users', { username, password_hash: hashPassword(pass), role, display_name: name, email, active: true });
-      closeModal(); toast('Usuario creado','success'); navigate('usuarios');
-    } catch(e) { toast('Error: '+e.message,'error'); }
+      // Check username unique
+      if (username) {
+        const { data: existing } = await sb.from('app_users').select('id').eq('username', username).maybeSingle();
+        if (existing) { showErr('Ese nombre de usuario ya está en uso'); return; }
+      }
+
+      // Create auth user via signUp (sin auto-login, preservamos sesión actual)
+      const { data: authData, error: authErr } = await sb.auth.admin
+        ? await sb.auth.admin.createUser({ email, password: pass, email_confirm: true })
+        : await _createUserViaSignup(email, pass);
+
+      if (authErr) throw authErr;
+
+      const newUserId = authData?.user?.id;
+      if (!newUserId) throw new Error('No se pudo obtener el ID del usuario creado.');
+
+      // Insert profile in app_users
+      await DB.insert('app_users', {
+        id: newUserId,
+        username: username || email.split('@')[0],
+        role,
+        display_name: name || username || email.split('@')[0],
+        email,
+        active: true,
+      });
+
+      closeModal();
+      toast('Usuario creado ✓', 'success');
+      navigate('usuarios');
+
+    } catch(e) {
+      let msg = e.message;
+      if (msg.includes('already registered')) msg = 'Ese correo ya está registrado.';
+      if (msg.includes('weak_password'))      msg = 'Contraseña muy débil (mín. 6 caracteres).';
+      showErr(msg);
+    }
+  }
+
+  // Fallback: create user using signUp then immediately restore admin session
+  async function _createUserViaSignup(email, pass) {
+    // Save admin token
+    const { data: { session: adminSession } } = await sb.auth.getSession();
+
+    const { data, error } = await sb.auth.signUp({ email, password: pass });
+    if (error) return { data, error };
+
+    // Immediately restore admin session
+    if (adminSession?.access_token) {
+      await sb.auth.setSession({
+        access_token: adminSession.access_token,
+        refresh_token: adminSession.refresh_token,
+      });
+    }
+    return { data, error: null };
   }
 
   async function toggleUserActive(id, active) {
-    try { await DB.update('users', id, { active }); toast(`Usuario ${active?'activado':'desactivado'}`,'success'); navigate('usuarios'); }
-    catch(e) { toast('Error: '+e.message,'error'); }
+    try {
+      await DB.update('app_users', id, { active });
+      toast(`Usuario ${active?'activado':'desactivado'} ✓`, 'success');
+      navigate('usuarios');
+    } catch(e) { toast('Error: '+e.message,'error'); }
   }
 
   async function deleteUser(id) {
-    confirm('¿Eliminar este usuario?', async()=>{
-      try { await DB.delete('users', id); toast('Usuario eliminado','success'); navigate('usuarios'); }
-      catch(e) { toast('Error: '+e.message,'error'); }
+    confirm('¿Eliminar este usuario permanentemente? Esta acción no se puede deshacer.', async () => {
+      try {
+        // Delete from app_users (auth.users requires service role — we only delete the profile)
+        await DB.delete('app_users', id);
+        toast('Usuario eliminado ✓', 'success');
+        navigate('usuarios');
+      } catch(e) { toast('Error: '+e.message,'error'); }
     });
   }
 
@@ -2620,13 +2755,18 @@ const App = (() => {
     const hasConn = initSupabase();
     if (hasConn) {
       document.getElementById('supabase-setup').classList.add('hidden');
-      // Check session
+      // Restore session if available
       const savedUser = sessionStorage.getItem('current_user');
       if (savedUser) {
-        currentUser = JSON.parse(savedUser);
-        document.getElementById('login-screen').classList.add('hidden');
-        document.getElementById('app').classList.remove('hidden');
-        initApp();
+        try {
+          currentUser = JSON.parse(savedUser);
+          document.getElementById('login-screen').classList.add('hidden');
+          document.getElementById('app').classList.remove('hidden');
+          initApp();
+        } catch {
+          sessionStorage.removeItem('current_user');
+          document.getElementById('login-screen').classList.remove('hidden');
+        }
       } else {
         document.getElementById('login-screen').classList.remove('hidden');
       }
@@ -2656,7 +2796,7 @@ const App = (() => {
     saveTransaction, deleteTransaction,
     uploadPropertyPhotos, deletePropertyPhoto,
     exportPropertiesExcel, exportTenantsExcel,
-    handleRoleChange, resetConnection, showNotifications,
+    resetConnection, showNotifications,
     modals, Reports, DB,
   };
 
