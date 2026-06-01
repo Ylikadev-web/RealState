@@ -20,7 +20,7 @@ const App = (() => {
     if (!url || !key) { toast('Ingresa URL y Key de Supabase', 'error'); return; }
     try {
       sb = supabase.createClient(url, key);
-      // Test connection against real table
+      // Test connection
       const { error } = await sb.from('app_users').select('id').limit(1);
       if (error && error.code !== 'PGRST116' && error.code !== '42501') throw error;
       localStorage.setItem('sb_url', url);
@@ -85,54 +85,31 @@ const App = (() => {
     e.preventDefault();
     const rawInput = document.getElementById('login-user').value.trim();
     const password = document.getElementById('login-pass').value;
-    const errEl   = document.getElementById('login-error');
+    const errEl    = document.getElementById('login-error');
     errEl.classList.remove('show');
-
     try {
-      // --- Determinar si ingresó username o email ---
       let emailToUse = rawInput;
-
-      // Si no contiene "@" lo tratamos como username → buscar email en app_users
       if (!rawInput.includes('@')) {
         const { data: found, error: lookupErr } = await sb
-          .from('app_users')
-          .select('email')
-          .eq('username', rawInput)
-          .maybeSingle();
+          .from('app_users').select('email').eq('username', rawInput).maybeSingle();
         if (lookupErr) throw lookupErr;
-        if (!found || !found.email) {
-          throw new Error('Usuario no encontrado. Verifica tu usuario o usa tu correo.');
-        }
+        if (!found || !found.email) throw new Error('Usuario no encontrado. Verifica tu usuario o usa tu correo.');
         emailToUse = found.email;
       }
-
-      // --- Login con Supabase Auth ---
-      const { data, error } = await sb.auth.signInWithPassword({
-        email: emailToUse,
-        password: password,
-      });
+      const { data, error } = await sb.auth.signInWithPassword({ email: emailToUse, password });
       if (error) throw error;
-
-      // --- Verificar que el usuario esté activo ---
       const { data: profile, error: profileError } = await sb
-        .from('app_users')
-        .select('*')
-        .eq('id', data.user.id)
-        .single();
+        .from('app_users').select('*').eq('id', data.user.id).single();
       if (profileError) throw profileError;
       if (!profile.active) throw new Error('Tu cuenta está desactivada. Contacta al administrador.');
-
       currentUser = profile;
       sessionStorage.setItem('current_user', JSON.stringify(profile));
-
       document.getElementById('login-screen').classList.add('hidden');
       document.getElementById('app').classList.remove('hidden');
       initApp();
-
     } catch (err) {
-      // Traducir errores comunes de Supabase al español
       let msg = err.message;
-      if (msg.includes('Invalid login credentials')) msg = 'Correo o contraseña incorrectos.';
+      if (msg.includes('Invalid login credentials')) msg = 'Usuario o contraseña incorrectos.';
       if (msg.includes('Email not confirmed'))       msg = 'Correo no confirmado. Revisa tu bandeja.';
       errEl.textContent = msg;
       errEl.classList.add('show');
@@ -159,27 +136,37 @@ const App = (() => {
     return 'H' + Math.abs(hash).toString(16) + pass.length;
   }
 
-  function isAdmin() { return currentUser?.role === 'admin'; }
-  function isSocio() { return currentUser?.role === 'socio'; }
-  function canSeeDocuments() { return isAdmin() || isSocio(); }
+  function isAdmin()         { return currentUser?.role === 'admin'; }
+  function isSocio()         { return currentUser?.role === 'socio'; }
+  function canManage()       { return isAdmin() || isSocio(); }
+  function canSeeDocuments() { return canManage(); }
+  function canEditUsers()    { return isAdmin(); }
 
   // ── INIT ───────────────────────────────────────────────────────
   async function initApp() {
-    // Update sidebar user info
     document.getElementById('sidebar-username').textContent = currentUser.display_name || currentUser.username;
     document.getElementById('sidebar-role').textContent = roleLabel(currentUser.role);
     document.getElementById('sidebar-avatar').textContent = (currentUser.display_name || currentUser.username)[0].toUpperCase();
 
+    // Mostrar botón de configuración solo al admin
+    const cfgBtn = document.getElementById('btn-config');
+    if (cfgBtn) cfgBtn.style.display = isAdmin() ? '' : 'none';
+
     buildNav();
 
-    // Navigate to default page
-    if (currentUser.role === 'socio') {
-      navigate('socio-dashboard');
-    } else if (currentUser.role === 'inquilino') {
+    // Página inicial según rol
+    if (['inquilino'].includes(currentUser.role)) {
+      navigate('mi-cuenta');
+    } else if (['limpieza','seguridad','mantenimiento'].includes(currentUser.role)) {
       navigate('mi-cuenta');
     } else {
-      navigate('dashboard');
+      navigate('dashboard'); // admin y socio van al dashboard principal
     }
+  }
+
+  function goConfig() {
+    if (!canEditUsers()) { toast('No tienes permiso para acceder a Configuración.', 'error'); return; }
+    navigate('configuracion');
   }
 
   function roleLabel(role) {
@@ -237,21 +224,46 @@ const App = (() => {
     `;
 
     const socioNav = `
-      <span class="nav-section-label">Mi Panel</span>
-      <div class="nav-item" data-page="socio-dashboard">
-        <span class="nav-icon">📈</span> Mi Dashboard
-      </div>
-      <div class="nav-item" data-page="socio-ganancias">
-        <span class="nav-icon">💰</span> Ganancias Compra/Venta
-      </div>
-      <div class="nav-item" data-page="socio-inquilinos">
-        <span class="nav-icon">🏠</span> Ganancias Inquilinos
+      <span class="nav-section-label">Principal</span>
+      <div class="nav-item" data-page="dashboard">
+        <span class="nav-icon">🏠</span> Dashboard
       </div>
       <div class="nav-item" data-page="inmuebles">
-        <span class="nav-icon">🏗️</span> Ver Inmuebles
+        <span class="nav-icon">🏗️</span> Inmuebles
+      </div>
+      <div class="nav-item" data-page="inquilinos">
+        <span class="nav-icon">👥</span> Inquilinos
+      </div>
+      <span class="nav-section-label">Personal</span>
+      <div class="nav-item" data-page="personal">
+        <span class="nav-icon">👷</span> Personal
+      </div>
+      <span class="nav-section-label">Finanzas</span>
+      <div class="nav-item" data-page="finanzas">
+        <span class="nav-icon">💰</span> Finanzas
+      </div>
+      <div class="nav-item" data-page="pagos">
+        <span class="nav-icon">💳</span> Pagos & Cobros
       </div>
       <div class="nav-item" data-page="reportes">
         <span class="nav-icon">📊</span> Reportes
+      </div>
+      <span class="nav-section-label">Portal</span>
+      <div class="nav-item" data-page="portal">
+        <span class="nav-icon">🌐</span> Portal Público
+      </div>
+      <div class="nav-item" data-page="paquetes">
+        <span class="nav-icon">📦</span> Paquetes
+      </div>
+      <span class="nav-section-label">Socio</span>
+      <div class="nav-item" data-page="socio-dashboard">
+        <span class="nav-icon">📈</span> Mis Ganancias
+      </div>
+      <div class="nav-item" data-page="socio-ganancias">
+        <span class="nav-icon">🏷️</span> Compra / Venta
+      </div>
+      <div class="nav-item" data-page="socio-inquilinos">
+        <span class="nav-icon">📊</span> Balance Inquilinos
       </div>
     `;
 
@@ -536,7 +548,7 @@ const App = (() => {
             <div class="section-title">Inmuebles</div>
             <div class="section-subtitle">${props.length} inmueble(s) registrado(s)</div>
           </div>
-          ${isAdmin() ? `<button class="btn btn-primary" onclick="App.modals.newProperty()">＋ Agregar Inmueble</button>` : ''}
+          ${canManage() ? `<button class="btn btn-primary" onclick="App.modals.newProperty()">＋ Agregar Inmueble</button>` : ''}
         </div>
         <div class="toolbar">
           <div class="toolbar-left">
@@ -590,7 +602,7 @@ const App = (() => {
           </div>
           <div class="property-actions">
             <button class="btn btn-secondary btn-sm flex-1" onclick="App.navigate('inmueble-detalle', {id:'${p.id}'})">Ver Detalle</button>
-            ${isAdmin() ? `
+            ${canManage() ? `
             <button class="btn btn-secondary btn-sm" onclick="App.modals.editProperty('${p.id}')" title="Editar">✏️</button>
             <button class="btn btn-danger btn-sm" onclick="App.deleteProperty('${p.id}')" title="Eliminar">🗑️</button>
             ` : ''}
@@ -624,7 +636,7 @@ const App = (() => {
       pc.innerHTML = `
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
           <button class="btn btn-secondary btn-sm" onclick="App.navigate('inmuebles')">← Volver</button>
-          ${isAdmin() ? `
+          ${canManage() ? `
           <button class="btn btn-primary btn-sm" onclick="App.modals.editProperty('${prop.id}')">✏️ Editar</button>
           <button class="btn btn-secondary btn-sm" onclick="App.Reports.propertyReport('${prop.id}')">📄 Reporte PDF</button>
           <button class="btn btn-secondary btn-sm" onclick="App.Reports.propertyExcel('${prop.id}')">📊 Reporte Excel</button>
@@ -672,7 +684,7 @@ const App = (() => {
         <div class="tab-content" id="tab-tenants">
           <div class="toolbar">
             <div class="card-title">Inquilinos del Inmueble</div>
-            ${isAdmin() ? `<button class="btn btn-primary btn-sm" onclick="App.modals.newTenant('${prop.id}')">＋ Agregar Inquilino</button>` : ''}
+            ${canManage() ? `<button class="btn btn-primary btn-sm" onclick="App.modals.newTenant('${prop.id}')">＋ Agregar Inquilino</button>` : ''}
           </div>
           <div class="card">
             <div class="table-wrap">
@@ -700,7 +712,7 @@ const App = (() => {
           <div class="card">
             <div class="card-header">
               <div class="card-title">Personal Asignado</div>
-              ${isAdmin() ? `<button class="btn btn-primary btn-sm" onclick="App.modals.assignStaff('${prop.id}')">＋ Asignar Personal</button>` : ''}
+              ${canManage() ? `<button class="btn btn-primary btn-sm" onclick="App.modals.assignStaff('${prop.id}')">＋ Asignar Personal</button>` : ''}
             </div>
             <div id="staff-list-${prop.id}">
               <div class="loading-overlay"><div class="spinner"></div></div>
@@ -727,11 +739,11 @@ const App = (() => {
           <div class="card">
             <div class="card-header">
               <div class="card-title">Gastos del Inmueble</div>
-              ${isAdmin() ? `<button class="btn btn-primary btn-sm" onclick="App.modals.newExpense('${prop.id}')">＋ Agregar Gasto</button>` : ''}
+              ${canManage() ? `<button class="btn btn-primary btn-sm" onclick="App.modals.newExpense('${prop.id}')">＋ Agregar Gasto</button>` : ''}
             </div>
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Concepto</th><th>Monto</th><th>Fecha</th><th>Categoría</th>${isAdmin()?'<th></th>':''}</tr></thead>
+                <thead><tr><th>Concepto</th><th>Monto</th><th>Fecha</th><th>Categoría</th>${canManage()?'<th></th>':''}</tr></thead>
                 <tbody>
                   ${expenses.map(e => `
                     <tr>
@@ -739,7 +751,7 @@ const App = (() => {
                       <td class="text-mono">${fmt(e.amount)}</td>
                       <td>${fmtDate(e.expense_date||e.created_at)}</td>
                       <td><span class="badge badge-gray">${escHtml(e.category||'—')}</span></td>
-                      ${isAdmin()?`<td><button class="btn btn-danger btn-xs" onclick="App.deleteExpense('${e.id}','${prop.id}')">🗑️</button></td>`:''}
+                      ${canManage()?`<td><button class="btn btn-danger btn-xs" onclick="App.deleteExpense('${e.id}','${prop.id}')">🗑️</button></td>`:''}
                     </tr>
                   `).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:24px">Sin gastos registrados</td></tr>'}
                 </tbody>
@@ -753,13 +765,13 @@ const App = (() => {
           <div class="card">
             <div class="card-header">
               <div class="card-title">Galería de Fotos</div>
-              ${isAdmin() ? `<label class="btn btn-primary btn-sm" style="cursor:pointer">📷 Subir Fotos<input type="file" multiple accept="image/*" style="display:none" onchange="App.uploadPropertyPhotos(this,'${prop.id}')"/></label>` : ''}
+              ${canManage() ? `<label class="btn btn-primary btn-sm" style="cursor:pointer">📷 Subir Fotos<input type="file" multiple accept="image/*" style="display:none" onchange="App.uploadPropertyPhotos(this,'${prop.id}')"/></label>` : ''}
             </div>
             <div class="photo-grid" id="photo-grid-${prop.id}">
               ${(prop.photos||[]).map(url => `
                 <div class="photo-thumb">
                   <img src="${url}" alt="foto"/>
-                  ${isAdmin()?`<button class="photo-thumb-del" onclick="App.deletePropertyPhoto('${prop.id}','${url}')">✕</button>`:''}
+                  ${canManage()?`<button class="photo-thumb-del" onclick="App.deletePropertyPhoto('${prop.id}','${url}')">✕</button>`:''}
                 </div>
               `).join('') || '<p style="color:var(--text-muted);font-size:13px">Sin fotos</p>'}
             </div>
@@ -772,7 +784,7 @@ const App = (() => {
           <div class="card">
             <div class="card-header">
               <div class="card-title">Documentación</div>
-              ${isAdmin() ? `<button class="btn btn-primary btn-sm" onclick="App.modals.uploadDocument('${prop.id}','property')">＋ Subir Documento</button>` : ''}
+              ${canManage() ? `<button class="btn btn-primary btn-sm" onclick="App.modals.uploadDocument('${prop.id}','property')">＋ Subir Documento</button>` : ''}
             </div>
             <div id="docs-list-${prop.id}-property">
               ${renderDocsList(docs, prop.id, 'property')}
@@ -809,7 +821,7 @@ const App = (() => {
           </div>
           <div class="doc-actions">
             <span class="badge badge-${s.role==='limpieza'?'purple':s.role==='seguridad'?'gold':'blue'}">${roleLabel(s.role)}</span>
-            ${isAdmin()?`<button class="btn btn-danger btn-xs" onclick="App.removeStaffAssignment('${a.id}','${propId}')">✕</button>`:''}
+            ${canManage()?`<button class="btn btn-danger btn-xs" onclick="App.removeStaffAssignment('${a.id}','${propId}')">✕</button>`:''}
           </div>
         </div>`;
       }).join('');
@@ -830,7 +842,7 @@ const App = (() => {
         </div>
         <div class="doc-actions">
           <a href="${d.url}" target="_blank" class="btn btn-secondary btn-xs">⬇️ Ver</a>
-          ${isAdmin()?`<button class="btn btn-danger btn-xs" onclick="App.deleteDocument('${d.id}','${entityId}','${entityType}')">🗑️</button>`:''}
+          ${canManage()?`<button class="btn btn-danger btn-xs" onclick="App.deleteDocument('${d.id}','${entityId}','${entityType}')">🗑️</button>`:''}
         </div>
       </div>
     `).join('');
@@ -847,7 +859,7 @@ const App = (() => {
             <div class="section-title">Inquilinos</div>
             <div class="section-subtitle">${tenants.length} inquilino(s)</div>
           </div>
-          ${isAdmin() ? `<button class="btn btn-primary" onclick="App.modals.newTenant()">＋ Agregar Inquilino</button>` : ''}
+          ${canManage() ? `<button class="btn btn-primary" onclick="App.modals.newTenant()">＋ Agregar Inquilino</button>` : ''}
         </div>
         <div class="toolbar">
           <div class="toolbar-left">
@@ -892,7 +904,7 @@ const App = (() => {
         <td>
           <div style="display:flex;gap:6px">
             <button class="btn btn-secondary btn-xs" onclick="App.navigate('inquilino-detalle',{id:'${t.id}'})">Ver</button>
-            ${isAdmin()?`<button class="btn btn-secondary btn-xs" onclick="App.modals.editTenant('${t.id}')">✏️</button>
+            ${canManage()?`<button class="btn btn-secondary btn-xs" onclick="App.modals.editTenant('${t.id}')">✏️</button>
             <button class="btn btn-danger btn-xs" onclick="App.deleteTenant('${t.id}')">🗑️</button>`:''}
           </div>
         </td>
@@ -928,7 +940,7 @@ const App = (() => {
       pc.innerHTML = `
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
           <button class="btn btn-secondary btn-sm" onclick="App.navigate('inquilinos')">← Volver</button>
-          ${isAdmin()?`
+          ${canManage()?`
           <button class="btn btn-primary btn-sm" onclick="App.modals.editTenant('${t.id}')">✏️ Editar</button>
           <button class="btn btn-secondary btn-sm" onclick="App.modals.newPayment('${t.id}')">💳 Registrar Pago</button>
           <button class="btn btn-secondary btn-sm" onclick="App.Reports.tenantReport('${t.id}','monthly')">📄 Reporte PDF</button>
@@ -990,12 +1002,12 @@ const App = (() => {
         <div class="tab-content" id="ti-payments">
           <div class="toolbar">
             <div class="card-title">Historial de Pagos</div>
-            ${isAdmin()?`<button class="btn btn-primary btn-sm" onclick="App.modals.newPayment('${t.id}')">＋ Registrar Pago</button>`:''}
+            ${canManage()?`<button class="btn btn-primary btn-sm" onclick="App.modals.newPayment('${t.id}')">＋ Registrar Pago</button>`:''}
           </div>
           <div class="card">
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Concepto</th><th>Monto</th><th>Período</th><th>Fecha Pago</th><th>Estado</th>${isAdmin()?'<th></th>':''}</tr></thead>
+                <thead><tr><th>Concepto</th><th>Monto</th><th>Período</th><th>Fecha Pago</th><th>Estado</th>${canManage()?'<th></th>':''}</tr></thead>
                 <tbody>
                   ${payments.map(p => `
                     <tr>
@@ -1004,7 +1016,7 @@ const App = (() => {
                       <td>${escHtml(p.period||'—')}</td>
                       <td>${fmtDate(p.payment_date||p.created_at)}</td>
                       <td><span class="badge badge-${p.status==='paid'?'green':p.status==='pending'?'gold':'red'}">${p.status==='paid'?'Pagado':p.status==='pending'?'Pendiente':'Vencido'}</span></td>
-                      ${isAdmin()?`<td><button class="btn btn-danger btn-xs" onclick="App.deletePayment('${p.id}','${t.id}')">🗑️</button></td>`:''}
+                      ${canManage()?`<td><button class="btn btn-danger btn-xs" onclick="App.deletePayment('${p.id}','${t.id}')">🗑️</button></td>`:''}
                     </tr>
                   `).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:24px">Sin pagos</td></tr>'}
                 </tbody>
@@ -1017,12 +1029,12 @@ const App = (() => {
         <div class="tab-content" id="ti-services">
           <div class="toolbar">
             <div class="card-title">Servicios del Inquilino</div>
-            ${isAdmin()?`<button class="btn btn-primary btn-sm" onclick="App.modals.newService('${t.id}')">＋ Agregar Servicio</button>`:''}
+            ${canManage()?`<button class="btn btn-primary btn-sm" onclick="App.modals.newService('${t.id}')">＋ Agregar Servicio</button>`:''}
           </div>
           <div class="card">
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Servicio</th><th>Precio</th><th>Frecuencia</th><th>Estado</th>${isAdmin()?'<th></th>':''}</tr></thead>
+                <thead><tr><th>Servicio</th><th>Precio</th><th>Frecuencia</th><th>Estado</th>${canManage()?'<th></th>':''}</tr></thead>
                 <tbody>
                   ${services.map(s => `
                     <tr>
@@ -1030,7 +1042,7 @@ const App = (() => {
                       <td class="text-mono">${fmt(s.price)}</td>
                       <td><span class="badge badge-blue">${escHtml(s.frequency||'mensual')}</span></td>
                       <td><span class="badge badge-${s.active?'green':'gray'}">${s.active?'Activo':'Inactivo'}</span></td>
-                      ${isAdmin()?`<td><button class="btn btn-danger btn-xs" onclick="App.deleteService('${s.id}','${t.id}')">🗑️</button></td>`:''}
+                      ${canManage()?`<td><button class="btn btn-danger btn-xs" onclick="App.deleteService('${s.id}','${t.id}')">🗑️</button></td>`:''}
                     </tr>
                   `).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:24px">Sin servicios</td></tr>'}
                 </tbody>
@@ -1045,7 +1057,7 @@ const App = (() => {
           <div class="card">
             <div class="card-header">
               <div class="card-title">Documentación del Inquilino</div>
-              ${isAdmin()?`<button class="btn btn-primary btn-sm" onclick="App.modals.uploadDocument('${t.id}','tenant')">＋ Subir Documento</button>`:''}
+              ${canManage()?`<button class="btn btn-primary btn-sm" onclick="App.modals.uploadDocument('${t.id}','tenant')">＋ Subir Documento</button>`:''}
             </div>
             <div id="docs-list-${t.id}-tenant">${renderDocsList(docs, t.id, 'tenant')}</div>
           </div>
@@ -1063,12 +1075,12 @@ const App = (() => {
       pc.innerHTML = `
         <div class="section-header">
           <div><div class="section-title">Personal</div><div class="section-subtitle">${staff.length} persona(s)</div></div>
-          ${isAdmin()?`<button class="btn btn-primary" onclick="App.modals.newStaff()">＋ Agregar Personal</button>`:''}
+          ${canManage()?`<button class="btn btn-primary" onclick="App.modals.newStaff()">＋ Agregar Personal</button>`:''}
         </div>
         <div class="card">
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Nombre</th><th>Rol</th><th>Teléfono</th><th>Email</th><th>Salario</th><th>Inmuebles</th>${isAdmin()?'<th>Acciones</th>':''}</tr></thead>
+              <thead><tr><th>Nombre</th><th>Rol</th><th>Teléfono</th><th>Email</th><th>Salario</th><th>Inmuebles</th>${canManage()?'<th>Acciones</th>':''}</tr></thead>
               <tbody>
                 ${staff.map(s => `
                   <tr>
@@ -1078,7 +1090,7 @@ const App = (() => {
                     <td>${escHtml(s.email||'—')}</td>
                     <td class="text-mono">${fmt(s.salary)}</td>
                     <td id="staff-props-${s.id}">...</td>
-                    ${isAdmin()?`<td><div style="display:flex;gap:6px">
+                    ${canManage()?`<td><div style="display:flex;gap:6px">
                       <button class="btn btn-secondary btn-xs" onclick="App.modals.editStaff('${s.id}')">✏️</button>
                       <button class="btn btn-danger btn-xs" onclick="App.deleteStaff('${s.id}')">🗑️</button>
                     </div></td>`:''}
@@ -1162,12 +1174,12 @@ const App = (() => {
       pc.innerHTML = `
         <div class="section-header">
           <div><div class="section-title">Pagos & Cobros</div><div class="section-subtitle">${payments.length} registros</div></div>
-          ${isAdmin()?`<button class="btn btn-primary" onclick="App.modals.newPayment()">＋ Registrar Pago</button>`:''}
+          ${canManage()?`<button class="btn btn-primary" onclick="App.modals.newPayment()">＋ Registrar Pago</button>`:''}
         </div>
         <div class="card">
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Inquilino</th><th>Concepto</th><th>Monto</th><th>Período</th><th>Fecha</th><th>Estado</th>${isAdmin()?'<th>Acciones</th>':''}</tr></thead>
+              <thead><tr><th>Inquilino</th><th>Concepto</th><th>Monto</th><th>Período</th><th>Fecha</th><th>Estado</th>${canManage()?'<th>Acciones</th>':''}</tr></thead>
               <tbody>
                 ${payments.map(p => {
                   const t = tenants.find(x => x.id === p.tenant_id);
@@ -1178,7 +1190,7 @@ const App = (() => {
                     <td>${escHtml(p.period||'—')}</td>
                     <td>${fmtDate(p.payment_date||p.created_at)}</td>
                     <td><span class="badge badge-${p.status==='paid'?'green':p.status==='pending'?'gold':'red'}">${p.status==='paid'?'Pagado':p.status==='pending'?'Pendiente':'Vencido'}</span></td>
-                    ${isAdmin()?`<td><div style="display:flex;gap:6px">
+                    ${canManage()?`<td><div style="display:flex;gap:6px">
                       <button class="btn btn-success btn-xs" onclick="App.markPaymentPaid('${p.id}')">✓ Pagado</button>
                       <button class="btn btn-danger btn-xs" onclick="App.deletePayment('${p.id}')">🗑️</button>
                     </div></td>`:''}
@@ -1298,7 +1310,7 @@ const App = (() => {
               </div>
               <div class="property-actions">
                 <button class="btn btn-primary btn-sm" style="flex:1" onclick="App.navigate('inmueble-detalle',{id:'${p.id}'})">Ver Detalle</button>
-                ${isAdmin()?`<button class="btn btn-secondary btn-sm" onclick="App.modals.editProperty('${p.id}')">✏️</button>`:''}
+                ${canManage()?`<button class="btn btn-secondary btn-sm" onclick="App.modals.editProperty('${p.id}')">✏️</button>`:''}
               </div>
             </div>`;
           }).join('') : `<div class="empty-state" style="grid-column:1/-1"><div class="empty-icon">🏢</div><h4>Sin espacios disponibles</h4><p>Marca inmuebles como "disponible" para que aparezcan aquí.</p></div>`}
@@ -1315,7 +1327,7 @@ const App = (() => {
       pc.innerHTML = `
         <div class="section-header">
           <div><div class="section-title">Paquetes de Servicios</div><div class="section-subtitle">Mantenimiento & Seguridad</div></div>
-          ${isAdmin()?`<button class="btn btn-primary" onclick="App.modals.newPackage()">＋ Crear Paquete</button>`:''}
+          ${canManage()?`<button class="btn btn-primary" onclick="App.modals.newPackage()">＋ Crear Paquete</button>`:''}
         </div>
         <div class="pkg-grid">
           ${pkgs.map(p=>`
@@ -1326,7 +1338,7 @@ const App = (() => {
                 ${(p.features||[]).map(f=>`<li>${escHtml(f)}</li>`).join('')}
               </ul>
               <div style="display:flex;gap:8px">
-                ${isAdmin()?`<button class="btn btn-secondary btn-sm flex-1" onclick="App.modals.editPackage('${p.id}')">✏️ Editar</button>
+                ${canManage()?`<button class="btn btn-secondary btn-sm flex-1" onclick="App.modals.editPackage('${p.id}')">✏️ Editar</button>
                 <button class="btn btn-danger btn-sm" onclick="App.deletePackage('${p.id}')">🗑️</button>`:''}
               </div>
             </div>
@@ -1338,7 +1350,7 @@ const App = (() => {
 
   // ── USUARIOS ─────────────────────────────────────────────────────
   Pages.usuarios = async function() {
-    if (!isAdmin()) { navigate('dashboard'); return; }
+    if (!canEditUsers()) { navigate('dashboard'); return; }
     const pc = document.getElementById('page-content');
     try {
       const users = await DB.get('app_users');
@@ -1354,7 +1366,7 @@ const App = (() => {
               <tbody>
                 ${users.map(u=>`
                   <tr>
-                    <td class="td-name text-mono">${escHtml(u.username||'—')}</td>
+                    <td class="td-name text-mono">${escHtml(u.username)}</td>
                     <td>${escHtml(u.display_name||'—')}</td>
                     <td><span class="role-dot role-${u.role}"></span>${roleLabel(u.role)}</td>
                     <td>${escHtml(u.email||'—')}</td>
@@ -1419,12 +1431,12 @@ const App = (() => {
       pc.innerHTML = `
         <div class="section-header">
           <div><div class="section-title">Ganancias — Compra / Venta</div></div>
-          ${isAdmin()||isSocio()?`<button class="btn btn-primary" onclick="App.modals.newTransaction()">＋ Registrar Transacción</button>`:''}
+          ${canManage()?`<button class="btn btn-primary" onclick="App.modals.newTransaction()">＋ Registrar Transacción</button>`:''}
         </div>
         <div class="card">
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Inmueble</th><th>Tipo</th><th>Precio Compra</th><th>Precio Venta</th><th>Ganancia</th><th>Fecha</th>${isAdmin()?'<th></th>':''}</tr></thead>
+              <thead><tr><th>Inmueble</th><th>Tipo</th><th>Precio Compra</th><th>Precio Venta</th><th>Ganancia</th><th>Fecha</th>${canManage()?'<th></th>':''}</tr></thead>
               <tbody>
                 ${transactions.map(t=>`
                   <tr>
@@ -1434,7 +1446,7 @@ const App = (() => {
                     <td class="text-mono">${fmt(t.sell_price)}</td>
                     <td class="text-mono text-${(t.profit||0)>0?'success':'danger'}">${fmt(t.profit)}</td>
                     <td>${fmtDate(t.transaction_date||t.created_at)}</td>
-                    ${isAdmin()?`<td><button class="btn btn-danger btn-xs" onclick="App.deleteTransaction('${t.id}')">🗑️</button></td>`:''}
+                    ${canManage()?`<td><button class="btn btn-danger btn-xs" onclick="App.deleteTransaction('${t.id}')">🗑️</button></td>`:''}
                   </tr>
                 `).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:24px">Sin transacciones</td></tr>'}
               </tbody>
@@ -1585,6 +1597,7 @@ const App = (() => {
   };
 
   Pages.configuracion = async function() {
+    if (!canEditUsers()) { navigate('dashboard'); return; }
     const pc = document.getElementById('page-content');
     pc.innerHTML = `
       <div class="section-title mb-24">Configuración</div>
@@ -2059,13 +2072,15 @@ const App = (() => {
   }
 
   // USER MODALS
-  modals.newUser = async function() {
+  modals.newUser = function() {
     openModal('Nuevo Usuario', `
       <div class="form-grid">
         <div class="form-group"><label>Nombre de Usuario *</label><input class="form-control" id="u-username" placeholder="juanperez"/></div>
         <div class="form-group"><label>Nombre Completo</label><input class="form-control" id="u-name"/></div>
-        <div class="form-group"><label>Correo Electrónico * <small style="color:var(--text-muted)">(para iniciar sesión)</small></label><input type="email" class="form-control" id="u-email" placeholder="correo@ejemplo.com"/></div>
-        <div class="form-group"><label>Contraseña * <small style="color:var(--text-muted)">(mín. 6 caracteres)</small></label><input type="password" class="form-control" id="u-pass" placeholder="••••••••"/></div>
+        <div class="form-group full"><label>Correo Electrónico * <small style="color:var(--text-muted)">(para iniciar sesión)</small></label>
+          <input type="email" class="form-control" id="u-email" placeholder="correo@ejemplo.com"/></div>
+        <div class="form-group"><label>Contraseña * <small style="color:var(--text-muted)">(mín. 6 caracteres)</small></label>
+          <input type="password" class="form-control" id="u-pass" placeholder="••••••••"/></div>
         <div class="form-group"><label>Rol *</label>
           <select class="form-control" id="u-role">
             <option value="socio">Socio</option>
@@ -2077,12 +2092,12 @@ const App = (() => {
         </div>
       </div>
       <div id="user-save-error" style="color:var(--danger);font-size:13px;margin-top:12px;display:none"></div>
-      <p style="font-size:12px;color:var(--text-muted);margin-top:14px">
-        ⓘ El usuario podrá iniciar sesión con su <strong>correo</strong> o <strong>nombre de usuario</strong> más su contraseña.
+      <p style="font-size:12px;color:var(--text-muted);margin-top:12px">
+        ⓘ El usuario podrá iniciar sesión con su <strong>nombre de usuario</strong> o su <strong>correo</strong>.
       </p>
     `, `
       <button class="btn btn-secondary" onclick="App.closeModal()">Cancelar</button>
-      <button class="btn btn-primary" id="btn-save-user" onclick="App.saveUser()">Crear Usuario</button>
+      <button class="btn btn-primary" onclick="App.saveUser()">Crear Usuario</button>
     `);
   };
 
@@ -2091,9 +2106,13 @@ const App = (() => {
     openModal('Editar Usuario', `
       <input type="hidden" id="u-id" value="${u.id}"/>
       <div class="form-grid">
-        <div class="form-group"><label>Nombre de Usuario</label><input class="form-control" id="u-username" value="${escHtml(u.username||'')}"/></div>
-        <div class="form-group"><label>Nombre Completo</label><input class="form-control" id="u-name" value="${escHtml(u.display_name||'')}"/></div>
-        <div class="form-group full"><label>Email</label><input type="email" class="form-control" id="u-email" value="${escHtml(u.email||'')}" disabled style="opacity:.6"/><small style="color:var(--text-muted);font-size:11px">El email no se puede cambiar desde aquí por seguridad.</small></div>
+        <div class="form-group"><label>Nombre de Usuario</label>
+          <input class="form-control" id="u-username" value="${escHtml(u.username||'')}"/></div>
+        <div class="form-group"><label>Nombre Completo</label>
+          <input class="form-control" id="u-name" value="${escHtml(u.display_name||'')}"/></div>
+        <div class="form-group full"><label>Email</label>
+          <input type="email" class="form-control" id="u-email" value="${escHtml(u.email||'')}" disabled style="opacity:.6"/>
+          <small style="color:var(--text-muted);font-size:11px">El email no se puede cambiar aquí por seguridad.</small></div>
         <div class="form-group"><label>Rol *</label>
           <select class="form-control" id="u-role">
             ${['socio','inquilino','limpieza','seguridad','mantenimiento'].map(r=>`<option value="${r}"${u.role===r?' selected':''}>${roleLabel(r)}</option>`).join('')}
@@ -2105,9 +2124,8 @@ const App = (() => {
             <option value="false"${!u.active?' selected':''}>Inactivo</option>
           </select>
         </div>
-        <div class="form-group full"><label>Nueva Contraseña <small style="color:var(--text-muted)">(dejar vacío para no cambiar)</small></label>
-          <input type="password" class="form-control" id="u-pass" placeholder="••••••••"/>
-        </div>
+        <div class="form-group full"><label>Nueva Contraseña <small style="color:var(--text-muted)">(vacío = no cambiar)</small></label>
+          <input type="password" class="form-control" id="u-pass" placeholder="••••••••"/></div>
       </div>
       <div id="user-save-error" style="color:var(--danger);font-size:13px;margin-top:12px;display:none"></div>
     `, `
@@ -2125,88 +2143,51 @@ const App = (() => {
     const role     = document.getElementById('u-role')?.value;
     const activeVal= document.getElementById('u-active')?.value;
     const errDiv   = document.getElementById('user-save-error');
+    const showErr  = (msg) => { if(errDiv){errDiv.textContent=msg;errDiv.style.display='block';} toast(msg,'error'); };
 
-    const showErr = (msg) => { if(errDiv){ errDiv.textContent=msg; errDiv.style.display='block'; } toast(msg,'error'); };
-
-    // ── EDIT MODE ──────────────────────────────────────────────
     if (id) {
-      const updates = { role, username, display_name: name };
+      // EDIT MODE
+      const updates = { role, display_name: name };
+      if (username) updates.username = username;
       if (activeVal !== undefined) updates.active = activeVal === 'true';
       try {
         await DB.update('app_users', id, updates);
-        // Change password if provided (requires service role key — inform user)
         if (pass && pass.length >= 6) {
-          // We update password via Supabase Admin API — only possible server-side
-          // Client-side workaround: update metadata note
-          toast('Contraseña: para cambiarla el usuario debe usar "Olvidé mi contraseña" o usa el Panel Supabase → Authentication → Users.', 'info');
+          toast('Contraseña: para cambiarla usa Supabase → Authentication → Users → editar.', 'info');
         }
-        closeModal();
-        toast('Usuario actualizado ✓', 'success');
-        navigate('usuarios');
+        closeModal(); toast('Usuario actualizado ✓', 'success'); navigate('usuarios');
       } catch(e) { showErr('Error: ' + e.message); }
       return;
     }
 
-    // ── CREATE MODE ────────────────────────────────────────────
+    // CREATE MODE
     if (!email || !pass) { showErr('Email y contraseña son obligatorios'); return; }
     if (pass.length < 6) { showErr('La contraseña debe tener al menos 6 caracteres'); return; }
     if (!email.includes('@')) { showErr('Ingresa un correo válido'); return; }
-
     try {
-      // Check username unique
       if (username) {
-        const { data: existing } = await sb.from('app_users').select('id').eq('username', username).maybeSingle();
-        if (existing) { showErr('Ese nombre de usuario ya está en uso'); return; }
+        const { data: ex } = await sb.from('app_users').select('id').eq('username', username).maybeSingle();
+        if (ex) { showErr('Ese nombre de usuario ya está en uso'); return; }
       }
-
-      // Create auth user via signUp (sin auto-login, preservamos sesión actual)
-      const { data: authData, error: authErr } = await sb.auth.admin
-        ? await sb.auth.admin.createUser({ email, password: pass, email_confirm: true })
-        : await _createUserViaSignup(email, pass);
-
+      const adminSession = (await sb.auth.getSession()).data.session;
+      const { data: authData, error: authErr } = await sb.auth.signUp({ email, password: pass });
       if (authErr) throw authErr;
-
-      const newUserId = authData?.user?.id;
-      if (!newUserId) throw new Error('No se pudo obtener el ID del usuario creado.');
-
-      // Insert profile in app_users
+      if (adminSession?.access_token) {
+        await sb.auth.setSession({ access_token: adminSession.access_token, refresh_token: adminSession.refresh_token });
+      }
+      const newId = authData?.user?.id;
+      if (!newId) throw new Error('No se pudo obtener el ID del usuario creado.');
       await DB.insert('app_users', {
-        id: newUserId,
-        username: username || email.split('@')[0],
-        role,
-        display_name: name || username || email.split('@')[0],
-        email,
-        active: true,
+        id: newId, username: username || email.split('@')[0],
+        role, display_name: name || username || email.split('@')[0], email, active: true,
       });
-
-      closeModal();
-      toast('Usuario creado ✓', 'success');
-      navigate('usuarios');
-
+      closeModal(); toast('Usuario creado ✓', 'success'); navigate('usuarios');
     } catch(e) {
       let msg = e.message;
       if (msg.includes('already registered')) msg = 'Ese correo ya está registrado.';
       if (msg.includes('weak_password'))      msg = 'Contraseña muy débil (mín. 6 caracteres).';
       showErr(msg);
     }
-  }
-
-  // Fallback: create user using signUp then immediately restore admin session
-  async function _createUserViaSignup(email, pass) {
-    // Save admin token
-    const { data: { session: adminSession } } = await sb.auth.getSession();
-
-    const { data, error } = await sb.auth.signUp({ email, password: pass });
-    if (error) return { data, error };
-
-    // Immediately restore admin session
-    if (adminSession?.access_token) {
-      await sb.auth.setSession({
-        access_token: adminSession.access_token,
-        refresh_token: adminSession.refresh_token,
-      });
-    }
-    return { data, error: null };
   }
 
   async function toggleUserActive(id, active) {
@@ -2218,9 +2199,8 @@ const App = (() => {
   }
 
   async function deleteUser(id) {
-    confirm('¿Eliminar este usuario permanentemente? Esta acción no se puede deshacer.', async () => {
+    confirm('¿Eliminar este usuario permanentemente?', async () => {
       try {
-        // Delete from app_users (auth.users requires service role — we only delete the profile)
         await DB.delete('app_users', id);
         toast('Usuario eliminado ✓', 'success');
         navigate('usuarios');
@@ -2755,7 +2735,6 @@ const App = (() => {
     const hasConn = initSupabase();
     if (hasConn) {
       document.getElementById('supabase-setup').classList.add('hidden');
-      // Restore session if available
       const savedUser = sessionStorage.getItem('current_user');
       if (savedUser) {
         try {
@@ -2796,7 +2775,7 @@ const App = (() => {
     saveTransaction, deleteTransaction,
     uploadPropertyPhotos, deletePropertyPhoto,
     exportPropertiesExcel, exportTenantsExcel,
-    resetConnection, showNotifications,
+    resetConnection, showNotifications, goConfig,
     modals, Reports, DB,
   };
 
